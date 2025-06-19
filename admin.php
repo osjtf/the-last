@@ -96,7 +96,8 @@ $conn->query("
     CREATE TABLE IF NOT EXISTS patients (
         id INT AUTO_INCREMENT PRIMARY KEY,
         name VARCHAR(100) NOT NULL,
-        identity_number VARCHAR(20) NOT NULL UNIQUE
+        identity_number VARCHAR(20) NOT NULL UNIQUE,
+        phone VARCHAR(20) DEFAULT NULL
     ) ENGINE=InnoDB CHARSET=utf8mb4
 ");
 
@@ -158,11 +159,12 @@ $conn->query("
 
 
 // ==== 5. دوال مساعدة لإدارة المرضى والأطباء (مراجعة: التحقق من المدخلات) ====
-function get_or_add_patient($conn, $name, $ident)
+function get_or_add_patient($conn, $name, $ident, $phone = null)
 {
     // تطهير المدخلات قبل استخدامها في الاستعلام
     $name = trim($name);
     $ident = trim($ident);
+    $phone = trim($phone ?? '');
 
     if (empty($name) || empty($ident)) {
         return false; // يجب أن تكون البيانات غير فارغة
@@ -184,12 +186,12 @@ function get_or_add_patient($conn, $name, $ident)
     }
     $stmt->close();
 
-    $stmt = $conn->prepare("INSERT INTO patients (name, identity_number) VALUES (?, ?)");
+    $stmt = $conn->prepare("INSERT INTO patients (name, identity_number, phone) VALUES (?, ?, ?)");
     if (!$stmt) {
         error_log("Prepare failed: (" . $conn->errno . ") " . $conn->error);
         return false;
     }
-    $stmt->bind_param("ss", $name, $ident);
+    $stmt->bind_param("sss", $name, $ident, $phone);
     $stmt->execute();
     $pid = $stmt->insert_id;
     $stmt->close();
@@ -391,14 +393,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         case 'add_patient':
             $pname = filter_input(INPUT_POST, 'patient_name', FILTER_SANITIZE_STRING);
             $pident = filter_input(INPUT_POST, 'identity_number', FILTER_SANITIZE_STRING);
+            $pphone = filter_input(INPUT_POST, 'phone', FILTER_SANITIZE_STRING);
 
             if (empty($pname) || empty($pident)) {
                 echo json_encode(['success' => false, 'message' => 'أدخل اسم المريض ورقم الهوية.']);
                 exit;
             }
-            $pid = get_or_add_patient($conn, $pname, $pident);
+            $pid = get_or_add_patient($conn, $pname, $pident, $pphone);
             if ($pid) {
-                $row = $conn->query("SELECT id, name, identity_number FROM patients WHERE id=$pid")->fetch_assoc();
+                $row = $conn->query("SELECT id, name, identity_number, phone FROM patients WHERE id=$pid")->fetch_assoc();
                 echo json_encode(['success' => true, 'patient' => $row, 'stats' => get_dashboard_stats($conn)]);
             } else {
                 echo json_encode(['success' => false, 'message' => 'حدث خطأ أثناء إضافة/جلب المريض.']);
@@ -409,21 +412,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $pid = filter_input(INPUT_POST, 'patient_id', FILTER_VALIDATE_INT);
             $pname = filter_input(INPUT_POST, 'patient_name', FILTER_SANITIZE_STRING);
             $pident = filter_input(INPUT_POST, 'identity_number', FILTER_SANITIZE_STRING);
+            $pphone = filter_input(INPUT_POST, 'phone', FILTER_SANITIZE_STRING);
 
             if (!$pid || empty($pname) || empty($pident)) {
                 echo json_encode(['success' => false, 'message' => 'بيانات المريض غير صحيحة.']);
                 exit;
             }
-            $stmt = $conn->prepare("UPDATE patients SET name=?, identity_number=? WHERE id=?");
+            $stmt = $conn->prepare("UPDATE patients SET name=?, identity_number=?, phone=? WHERE id=?");
             if (!$stmt) {
                 error_log("Prepare failed (edit_patient): (" . $conn->errno . ") " . $conn->error);
                 echo json_encode(['success' => false, 'message' => 'خطأ في قاعدة البيانات.']);
                 exit;
             }
-            $stmt->bind_param("ssi", $pname, $pident, $pid);
+            $stmt->bind_param("sssi", $pname, $pident, $pphone, $pid);
             $stmt->execute();
             $stmt->close();
-            $row = $conn->query("SELECT id, name, identity_number FROM patients WHERE id=$pid")->fetch_assoc();
+            $row = $conn->query("SELECT id, name, identity_number, phone FROM patients WHERE id=$pid")->fetch_assoc();
             echo json_encode(['success' => true, 'patient' => $row, 'stats' => get_dashboard_stats($conn)]);
             break;
 
@@ -445,7 +449,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
         case 'fetch_all_patients': // إجراء جديد لجلب قائمة المرضى
             $patients_list = [];
-            $res = $conn->query("SELECT id, name, identity_number FROM patients ORDER BY name ASC");
+            $res = $conn->query("SELECT id, name, identity_number, phone FROM patients ORDER BY name ASC");
             while ($row = $res->fetch_assoc()) {
                 $patients_list[] = $row;
             }
@@ -461,11 +465,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             if ($patient_select_type === 'manual') {
                 $pm_name = filter_input(INPUT_POST, 'patient_manual_name', FILTER_SANITIZE_STRING);
                 $pm_id = filter_input(INPUT_POST, 'patient_manual_id', FILTER_SANITIZE_STRING);
+                $pm_phone = filter_input(INPUT_POST, 'patient_manual_phone', FILTER_SANITIZE_STRING);
                 if (empty($pm_name) || empty($pm_id)) {
                     echo json_encode(['success' => false, 'message' => 'يجب إدخال اسم المريض ورقم هويته يدوياً.']);
                     exit;
                 }
-                $pid = get_or_add_patient($conn, $pm_name, $pm_id);
+                $pid = get_or_add_patient($conn, $pm_name, $pm_id, $pm_phone);
             } else {
                 $pid = filter_input(INPUT_POST, 'patient_select', FILTER_VALIDATE_INT);
             }
@@ -872,7 +877,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
                 echo json_encode(['success' => false, 'message' => 'معرف الإجازة غير صحيح.']);
                 exit;
             }
-            $stmt = $conn->prepare("SELECT id, DATE_FORMAT(queried_at, '%Y-%m-%d %r') AS queried_at FROM leave_queries WHERE leave_id=? ORDER BY queried_at DESC");
+            $stmt = $conn->prepare("SELECT lq.id, DATE_FORMAT(lq.queried_at, '%Y-%m-%d %r') AS queried_at, d.note AS doctor_note
+                                     FROM leave_queries lq
+                                     JOIN sick_leaves sl ON lq.leave_id=sl.id
+                                     JOIN doctors d ON sl.doctor_id=d.id
+                                     WHERE lq.leave_id=? ORDER BY lq.queried_at DESC");
             if (!$stmt) {
                 error_log("Prepare failed (fetch_queries): (" . $conn->errno . ") " . $conn->error);
                 echo json_encode(['success' => false, 'message' => 'خطأ في قاعدة البيانات.']);
@@ -883,7 +892,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $res = $stmt->get_result();
             $arr = [];
             while ($r = $res->fetch_assoc()) {
-                $arr[] = ['id' => $r['id'], 'queried_at' => $r['queried_at']];
+                $arr[] = ['id' => $r['id'], 'queried_at' => $r['queried_at'], 'doctor_note' => $r['doctor_note']];
             }
             $stmt->close();
             echo json_encode(['success' => true, 'queries' => $arr, 'stats' => get_dashboard_stats($conn)]);
@@ -1060,10 +1069,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
             $all_queries = [];
             $res_queries = $conn->query("SELECT lq.id AS qid, lq.leave_id, sl.service_code, p.name AS patient_name, p.identity_number,
+                                 d.note AS doctor_note,
                                  DATE_FORMAT(lq.queried_at, '%Y-%m-%d %r') AS queried_at
                           FROM leave_queries lq
                           JOIN sick_leaves sl ON lq.leave_id=sl.id AND sl.is_deleted=0
                           JOIN patients p ON sl.patient_id=p.id
+                          JOIN doctors d ON sl.doctor_id=d.id
                           ORDER BY lq.queried_at DESC");
             if ($res_queries) {
                 while ($row = $res_queries->fetch_assoc()) {
@@ -1195,10 +1206,12 @@ if ($res) {
 // ==== 11. جلب سجلات الاستعلامات للإجازات النشطة (للجدول الفرعي) ====
 $queries = [];
 $res = $conn->query("SELECT lq.id AS qid, lq.leave_id, sl.service_code, p.name AS patient_name, p.identity_number,
+                             d.note AS doctor_note,
                              DATE_FORMAT(lq.queried_at, '%Y-%m-%d %r') AS queried_at
                       FROM leave_queries lq
                       JOIN sick_leaves sl ON lq.leave_id=sl.id AND sl.is_deleted=0
                       JOIN patients p ON sl.patient_id=p.id
+                      JOIN doctors d ON sl.doctor_id=d.id
                       ORDER BY lq.queried_at DESC");
 if ($res) {
     while ($row = $res->fetch_assoc()) {
@@ -1983,7 +1996,7 @@ $conn->close();
                 <div class="col-md-6">
                     <label for="patient_select">ابحث عن مريض</label>
                     <div class="input-group mb-1">
-                        <input type="text" id="searchPatient" class="form-control" placeholder="ابحث بالاسم أو الهوية">
+                        <input type="text" id="searchPatient" class="form-control" placeholder="ابحث بالاسم أو الهوية أو الهاتف">
                         <button class="btn btn-primary" type="button" id="btn-search-patient"><i
                                 class="bi bi-search"></i> بحث</button>
                     </div>
@@ -1991,7 +2004,8 @@ $conn->close();
                         <option value="">اختر مريضًا</option>
                         <?php foreach ($patients as $p): ?>
                             <option value="<?= $p['id'] ?>" data-name="<?= htmlspecialchars(strtolower($p['name'])) ?>"
-                                data-identity="<?= htmlspecialchars(strtolower($p['identity_number'])) ?>">
+                                data-identity="<?= htmlspecialchars(strtolower($p['identity_number'])) ?>"
+                                data-phone="<?= htmlspecialchars(strtolower($p['phone'] ?? '')) ?>">
                                 <?= htmlspecialchars($p['name'] . ' (' . $p['identity_number'] . ')') ?>
                             </option>
                         <?php endforeach; ?>
@@ -2002,6 +2016,8 @@ $conn->close();
                         class="form-control mt-2 hidden-field" placeholder="اسم المريض الجديد">
                     <input type="text" name="patient_manual_id" id="patient_manual_id"
                         class="form-control mt-1 hidden-field" placeholder="رقم الهوية الجديد">
+                    <input type="text" name="patient_manual_phone" id="patient_manual_phone"
+                        class="form-control mt-1 hidden-field" placeholder="رقم الهاتف الجديد">
                     <div class="invalid-feedback">أدخل اسم المريض ورقم هويته.</div>
                     <div id="noPatientResult" class="no-results mt-1" style="display:none;">
                         لم يتم العثور على مريض مطابق.
@@ -2205,10 +2221,10 @@ $conn->close();
                                                 class="bi bi-pencil-square"></i> تعديل</button>
                                         <button class="btn btn-danger btn-sm action-btn btn-delete-leave"><i
                                                 class="bi bi-archive-fill"></i> أرشفة</button>
-                                        <button class="btn btn-warning btn-sm action-btn btn-view-queries"><i
+                                        <button class="btn btn-warning btn-sm action-btn btn-view-queries" data-leave-id="<?= $lv['id'] ?>"><i
                                                 class="bi bi-journal-text"></i> استعلامات</button>
                                         <button
-                                            class="btn btn-success btn-sm action-btn btn-mark-paid <?= $lv['is_paid'] ? 'd-none' : '' ?>"><i
+                                            class="btn btn-success btn-sm action-btn btn-mark-paid <?= $lv['is_paid'] ? 'd-none' : '' ?>" data-leave-id="<?= $lv['id'] ?>" data-amount="<?= number_format($lv['payment_amount'],2) ?>"><i
                                                 class="bi bi-cash-stack"></i> دفع</button>
                                     </td>
                                 </tr>
@@ -2332,7 +2348,7 @@ $conn->close();
                                             <button class="btn btn-danger btn-sm action-btn btn-force-delete-leave"><i
                                                     class="bi bi-x-circle"></i>
                                                 حذف نهائي</button>
-                                            <button class="btn btn-warning btn-sm action-btn btn-view-queries"><i
+                                            <button class="btn btn-warning btn-sm action-btn btn-view-queries" data-leave-id="<?= $lv['id'] ?>"><i
                                                     class="bi bi-journal-text"></i>
                                                 استعلامات</button>
                                         </td>
@@ -2471,7 +2487,7 @@ $conn->close();
                                     </tr>
                                 <?php else: ?>
                                     <?php foreach ($queries as $idx => $q): ?>
-                                        <tr data-id="<?= $q['qid'] ?>">
+                                        <tr data-id="<?= $q['qid'] ?>" data-doctor-note="<?= htmlspecialchars(strtolower($q['doctor_note'] ?? '')) ?>">
                                             <td class="row-num"></td>
                                             <td class="cell-service"><?= htmlspecialchars(strtoupper($q['service_code'])) ?>
                                             </td>
@@ -2646,7 +2662,7 @@ $conn->close();
                     <div class="input-group mb-2">
                         <label for="searchPatientsTable" class="form-label visually-hidden">بحث</label>
                         <input type="text" id="searchPatientsTable" class="form-control"
-                            placeholder="ابحث بالاسم أو الهوية">
+                            placeholder="ابحث بالاسم أو الهوية أو الهاتف">
                         <button class="btn btn-primary" type="button" id="btn-search-patients"><i
                                 class="bi bi-search"></i> بحث</button>
                     </div>
@@ -2657,6 +2673,7 @@ $conn->close();
                                     <th>رقم</th>
                                     <th>الاسم <i class="bi bi-sort-alpha-down"></i></th>
                                     <th>الهوية</th>
+                                    <th>الهاتف</th>
                                     <th>تحكم</th>
                                 </tr>
                             </thead>
@@ -2666,6 +2683,7 @@ $conn->close();
                                         <td class="row-num"></td>
                                         <td><?= htmlspecialchars($p['name']) ?></td>
                                         <td><?= htmlspecialchars($p['identity_number']) ?></td>
+                                        <td><?= htmlspecialchars($p['phone'] ?? '') ?></td>
                                         <td>
                                             <button class="btn btn-warning btn-sm action-btn btn-edit-patient"><i
                                                     class="bi bi-pencil-square"></i> تعديل</button>
@@ -2676,7 +2694,7 @@ $conn->close();
                                 <?php endforeach; ?>
                                 <?php if (empty($patients)): ?>
                                     <tr class="no-results">
-                                        <td colspan="4">لا يوجد مرضى حاليًا.</td>
+                                        <td colspan="5">لا يوجد مرضى حاليًا.</td>
                                     </tr>
                                 <?php endif; ?>
                             </tbody>
@@ -2685,17 +2703,22 @@ $conn->close();
                     <form class="row g-2 mt-3 needs-validation" id="patientForm" style="display:none;" novalidate>
                         <?= csrf_input(); ?>
                         <input type="hidden" id="patient_form_id" name="patient_id">
-                        <div class="col-md-5">
+                        <div class="col-md-4">
                             <label for="patient_form_name" class="form-label visually-hidden">اسم المريض</label>
                             <input type="text" id="patient_form_name" name="patient_name" class="form-control"
                                 placeholder="اسم المريض" required>
                             <div class="invalid-feedback">أدخل اسم المريض.</div>
                         </div>
-                        <div class="col-md-5">
+                        <div class="col-md-4">
                             <label for="patient_form_identity" class="form-label visually-hidden">رقم الهوية</label>
                             <input type="text" id="patient_form_identity" name="identity_number" class="form-control"
                                 placeholder="رقم الهوية" required>
                             <div class="invalid-feedback">أدخل رقم الهوية.</div>
+                        </div>
+                        <div class="col-md-4">
+                            <label for="patient_form_phone" class="form-label visually-hidden">رقم الهاتف</label>
+                            <input type="text" id="patient_form_phone" name="phone" class="form-control"
+                                placeholder="رقم الهاتف">
                         </div>
                         <div class="col-md-2 d-flex gap-1">
                             <button type="submit" class="btn btn-success-custom w-100"><i class="bi bi-save-fill"></i>
@@ -2836,6 +2859,7 @@ $conn->close();
             const patientSelect = document.getElementById('patient_select');
             const patientManualName = document.getElementById('patient_manual_name');
             const patientManualId = document.getElementById('patient_manual_id');
+            const patientManualPhone = document.getElementById('patient_manual_phone');
             const searchPatientInput = document.getElementById('searchPatient');
             const noPatientResult = document.getElementById('noPatientResult');
 
@@ -2892,6 +2916,7 @@ $conn->close();
                 patients: [],
                 payments: []
             }; // لتخزين البيانات الحالية للجداول
+            let currentDetailedQueries = [];
 
             // ======================== دوال مساعدة (Helper Functions) ========================
 
@@ -3234,6 +3259,7 @@ $conn->close();
                         option.textContent = `${p.name} (${p.identity_number})`;
                         option.dataset.name = p.name.toLowerCase();
                         option.dataset.identity = p.identity_number.toLowerCase();
+                        option.dataset.phone = (p.phone || '').toLowerCase();
                         patientSelect.append(option);
                     });
                     if (selectedId) {
@@ -3254,6 +3280,7 @@ $conn->close();
                 <td class="row-num"></td>
                 <td class="cell-patient-name">${htmlspecialchars(p.name)}</td>
                 <td class="cell-patient-identity">${htmlspecialchars(p.identity_number)}</td>
+                <td class="cell-patient-phone">${htmlspecialchars(p.phone || '')}</td>
                 <td>
                     <button class="btn btn-warning btn-sm action-btn btn-edit-patient"><i class="bi bi-pencil-square"></i> تعديل</button>
                     <button class="btn btn-danger btn-sm action-btn btn-delete-patient"><i class="bi bi-trash-fill"></i> حذف</button>
@@ -3380,9 +3407,9 @@ $conn->close();
              * @param {object} q - بيانات الاستعلام.
              * @returns {string} - HTML لصف الاستعلام.
              */
-            function generateQueryRow(q) {
+function generateQueryRow(q) {
                 return `
-            <tr data-id="${q.qid}" data-leave-id="${q.leave_id}">
+            <tr data-id="${q.qid}" data-leave-id="${q.leave_id}" data-doctor-note="${(q.doctor_note || '').toLowerCase()}">
                 <td class="row-num"></td>
                 <td class="cell-service">${htmlspecialchars(q.service_code.toUpperCase())}</td>
                 <td class="cell-patient">${htmlspecialchars(q.patient_name)}</td>
@@ -3394,6 +3421,22 @@ $conn->close();
                 </td>
             </tr>
         `;
+}
+
+            function renderDetailedQueries() {
+                if (currentDetailedQueries.length === 0) {
+                    queriesDetailsContainer.innerHTML = '<p class="text-center">لا توجد سجلات استعلام لهذه الإجازة.</p>';
+                    return;
+                }
+                queriesDetailsContainer.innerHTML = '<ul class="list-group" id="detailedQueriesList"></ul>';
+                const list = document.getElementById('detailedQueriesList');
+                currentDetailedQueries.forEach(q => {
+                    const li = document.createElement('li');
+                    li.className = 'list-group-item d-flex justify-content-between align-items-center';
+                    li.setAttribute('data-id', q.id);
+                    li.innerHTML = `<span>${htmlspecialchars(q.queried_at)}</span><button class="btn btn-danger btn-sm btn-delete-detail-query" data-id="${q.id}"><i class="bi bi-trash-fill"></i> حذف</button>`;
+                    list.appendChild(li);
+                });
             }
 
             /**
@@ -3445,17 +3488,21 @@ $conn->close();
                         if (tableElement.id === 'leavesTable' || tableElement.id === 'archivedTable') {
                             return item.service_code.toLowerCase().includes(searchTerm) ||
                                 item.patient_name.toLowerCase().includes(searchTerm) ||
-                                item.doctor_name.toLowerCase().includes(searchTerm);
+                                item.doctor_name.toLowerCase().includes(searchTerm) ||
+                                (item.doctor_note && item.doctor_note.toLowerCase().includes(searchTerm));
                         } else if (tableElement.id === 'doctorsTable') {
                             return item.name.toLowerCase().includes(searchTerm) ||
-                                item.title.toLowerCase().includes(searchTerm);
+                                item.title.toLowerCase().includes(searchTerm) ||
+                                (item.note && item.note.toLowerCase().includes(searchTerm));
                         } else if (tableElement.id === 'patientsTable') {
                             return item.name.toLowerCase().includes(searchTerm) ||
-                                item.identity_number.toLowerCase().includes(searchTerm);
+                                item.identity_number.toLowerCase().includes(searchTerm) ||
+                                (item.phone && item.phone.toLowerCase().includes(searchTerm));
                         } else if (tableElement.id === 'queriesTable') {
                             return item.service_code.toLowerCase().includes(searchTerm) ||
                                 item.patient_name.toLowerCase().includes(searchTerm) ||
-                                item.identity_number.toLowerCase().includes(searchTerm);
+                                item.identity_number.toLowerCase().includes(searchTerm) ||
+                                (item.doctor_note && item.doctor_note.toLowerCase().includes(searchTerm));
                         } else if (tableElement.id === 'paymentsTable') {
                             return item.name.toLowerCase().includes(searchTerm);
                         }
@@ -3748,6 +3795,7 @@ $conn->close();
                 const isManual = patientSelect.value === 'manual';
                 patientManualName.classList.toggle('hidden-field', !isManual);
                 patientManualId.classList.toggle('hidden-field', !isManual);
+                patientManualPhone.classList.toggle('hidden-field', !isManual);
                 patientManualName.toggleAttribute('required', isManual);
                 patientManualId.toggleAttribute('required', isManual);
                 searchPatientInput.classList.toggle('hidden-field', isManual);
@@ -3759,6 +3807,7 @@ $conn->close();
                     patientManualId.value = '';
                     patientManualName.classList.remove('is-invalid');
                     patientManualId.classList.remove('is-invalid');
+                    patientManualPhone.value = '';
                 }
             }
 
@@ -3769,7 +3818,8 @@ $conn->close();
                 patientSelect.querySelectorAll('option:not([value="manual"]):not([value=""])').forEach(option => {
                     const patientName = option.dataset.name;
                     const patientIdentity = option.dataset.identity;
-                    const matches = patientName.includes(searchTerm) || patientIdentity.includes(searchTerm);
+                    const patientPhone = option.dataset.phone || '';
+                    const matches = patientName.includes(searchTerm) || patientIdentity.includes(searchTerm) || patientPhone.includes(searchTerm);
                     option.style.display = matches ? '' : 'none';
                     if (matches) found = true;
                 });
@@ -3900,8 +3950,9 @@ $conn->close();
 
             // تعديل طبيب
             doctorsTable.addEventListener('click', async (e) => {
-                if (e.target.classList.contains('btn-edit-doctor')) {
-                    const row = e.target.closest('tr');
+                const editBtn = e.target.closest('.btn-edit-doctor');
+                if (editBtn) {
+                    const row = editBtn.closest('tr');
                     const doctorId = row.dataset.id;
                     const doctorName = row.querySelector('.cell-doctor-name').textContent;
                     const doctorTitle = row.querySelector('.cell-doctor-title').textContent;
@@ -3917,8 +3968,9 @@ $conn->close();
 
             // حذف طبيب
             doctorsTable.addEventListener('click', (e) => {
-                if (e.target.classList.contains('btn-delete-doctor')) {
-                    const row = e.target.closest('tr');
+                const delBtn = e.target.closest('.btn-delete-doctor');
+                if (delBtn) {
+                    const row = delBtn.closest('tr');
                     const doctorId = row.dataset.id;
                     confirmMessage.textContent = 'هل أنت متأكد من حذف هذا الطبيب؟ سيتم حذف جميع الإجازات المرتبطة به.';
                     currentConfirmAction = async () => {
@@ -3950,6 +4002,7 @@ $conn->close();
             const patientFormId = document.getElementById('patient_form_id');
             const patientFormName = document.getElementById('patient_form_name');
             const patientFormIdentity = document.getElementById('patient_form_identity');
+            const patientFormPhone = document.getElementById('patient_form_phone');
 
             document.getElementById('btn-show-add-patient').addEventListener('click', () => {
                 clearForm(patientForm);
@@ -3983,23 +4036,27 @@ $conn->close();
 
             // تعديل مريض
             patientsTable.addEventListener('click', async (e) => {
-                if (e.target.classList.contains('btn-edit-patient')) {
-                    const row = e.target.closest('tr');
+                const editBtn = e.target.closest('.btn-edit-patient');
+                if (editBtn) {
+                    const row = editBtn.closest('tr');
                     const patientId = row.dataset.id;
                     const patientName = row.querySelector('.cell-patient-name').textContent;
                     const patientIdentity = row.querySelector('.cell-patient-identity').textContent;
+                    const patientPhone = row.querySelector('.cell-patient-phone').textContent;
 
                     patientFormId.value = patientId;
                     patientFormName.value = patientName;
                     patientFormIdentity.value = patientIdentity;
+                    patientFormPhone.value = patientPhone;
                     patientForm.style.display = 'flex'; // إظهار النموذج للتعديل
                 }
             });
 
             // حذف مريض
             patientsTable.addEventListener('click', (e) => {
-                if (e.target.classList.contains('btn-delete-patient')) {
-                    const row = e.target.closest('tr');
+                const delBtn = e.target.closest('.btn-delete-patient');
+                if (delBtn) {
+                    const row = delBtn.closest('tr');
                     const patientId = row.dataset.id;
                     confirmMessage.textContent = 'هل أنت متأكد من حذف هذا المريض؟ سيتم حذف جميع الإجازات المرتبطة به.';
                     currentConfirmAction = async () => {
@@ -4030,8 +4087,9 @@ $conn->close();
 
             // معالجة تعديل إجازة (فتح المودال وملء البيانات)
             leavesTable.addEventListener('click', async (e) => {
-                if (e.target.classList.contains('btn-edit-leave')) {
-                    const row = e.target.closest('tr');
+                const editBtn = e.target.closest('.btn-edit-leave');
+                if (editBtn) {
+                    const row = editBtn.closest('tr');
                     const leaveId = row.dataset.id;
                     const leaveData = currentTableData.leaves.find(l => l.id == leaveId);
 
@@ -4140,8 +4198,9 @@ $conn->close();
 
             // أرشفة إجازة
             leavesTable.addEventListener('click', (e) => {
-                if (e.target.classList.contains('btn-delete-leave')) {
-                    const row = e.target.closest('tr');
+                const delBtn = e.target.closest('.btn-delete-leave');
+                if (delBtn) {
+                    const row = delBtn.closest('tr');
                     const leaveId = row.dataset.id;
                     confirmMessage.textContent = 'هل أنت متأكد من أرشفة هذه الإجازة؟ سيتم نقلها إلى الأرشيف.';
                     currentConfirmAction = async () => {
@@ -4232,10 +4291,12 @@ $conn->close();
                 confirmModal.show();
             });
 
-            // تسجيل استعلام (علامة استعلام)
+            // تسجيل استعلام ودفع الإجازة
             leavesTable.addEventListener('click', async (e) => {
-                if (e.target.classList.contains('btn-view-queries')) {
-                    const leaveId = e.target.dataset.leaveId;
+                const queriesBtn = e.target.closest('.btn-view-queries');
+                const payBtn = e.target.closest('.btn-mark-paid');
+                if (queriesBtn) {
+                    const leaveId = queriesBtn.dataset.leaveId;
                     queriesDetailsContainer.innerHTML = '<p class="text-center">جارٍ جلب البيانات...</p>';
                     viewQueriesModal.show();
                     currentConfirmId = leaveId; // حفظ معرف الإجازة لعرض سجلات الاستعلامات التفصيلية
@@ -4244,24 +4305,8 @@ $conn->close();
                         leave_id: leaveId
                     });
                     if (result.success) {
-                        if (result.queries.length > 0) {
-                            queriesDetailsContainer.innerHTML = `
-                        <ul class="list-group" id="detailedQueriesList"></ul>
-                    `;
-                            const detailedQueriesList = document.getElementById('detailedQueriesList');
-                            result.queries.forEach(q => {
-                                const li = document.createElement('li');
-                                li.className = 'list-group-item d-flex justify-content-between align-items-center';
-                                li.setAttribute('data-id', q.id);
-                                li.innerHTML = `
-                            <span>${htmlspecialchars(q.queried_at)}</span>
-                            <button class="btn btn-danger btn-sm btn-delete-detail-query" data-id="${q.id}"><i class="bi bi-trash-fill"></i> حذف</button>
-                        `;
-                                detailedQueriesList.appendChild(li);
-                            });
-                        } else {
-                            queriesDetailsContainer.innerHTML = '<p class="text-center">لا توجد سجلات استعلام لهذه الإجازة.</p>';
-                        }
+                        currentDetailedQueries = result.queries;
+                        renderDetailedQueries();
                     } else {
                         queriesDetailsContainer.innerHTML = `<p class="text-center text-danger">${result.message}</p>`;
                     }
@@ -4292,8 +4337,9 @@ $conn->close();
 
             // حذف استعلام من نافذة تفاصيل الاستعلام
             queriesDetailsContainer.addEventListener('click', (e) => {
-                if (e.target.classList.contains('btn-delete-detail-query')) {
-                    const queryId = e.target.dataset.id;
+                const delBtn = e.target.closest('.btn-delete-detail-query');
+                if (delBtn) {
+                    const queryId = delBtn.dataset.id;
                     confirmMessage.textContent = 'هل أنت متأكد من حذف سجل الاستعلام هذا؟';
                     currentConfirmAction = async () => {
                         const result = await sendAjaxRequest('delete_query', {
@@ -4688,8 +4734,10 @@ $conn->close();
 
             // عرض تفاصيل إجازة من سجل الاستعلامات
             queriesTable.addEventListener('click', async (e) => {
-                if (e.target.classList.contains('btn-view-leave-from-query')) {
-                    const leaveId = e.target.dataset.leaveId;
+                const viewBtn = e.target.closest('.btn-view-leave-from-query');
+                const delBtn = e.target.closest('.btn-delete-query');
+                if (viewBtn) {
+                    const leaveId = viewBtn.dataset.leaveId;
                     showLoading();
                     const result = await sendAjaxRequest('fetch_leave_details', { leave_id: leaveId });
                     hideLoading();
@@ -4714,7 +4762,49 @@ $conn->close();
                     } else {
                         showToast(result.message || 'فشل في جلب تفاصيل الإجازة.', 'danger');
                     }
+                } else if (delBtn) {
+                    const queryId = delBtn.closest('tr').dataset.id;
+                    confirmMessage.textContent = 'هل أنت متأكد من حذف سجل الاستعلام هذا؟';
+                    currentConfirmAction = async () => {
+                        const result = await sendAjaxRequest('delete_query', { query_id: queryId });
+                        if (result.success) {
+                            showToast(result.message, 'success');
+                            currentTableData.queries = currentTableData.queries.filter(q => q.qid != queryId);
+                            updateTable(queriesTable, currentTableData.queries, generateQueryRow);
+                            updateStats(result.stats);
+                        }
+                    };
+                    confirmModal.show();
+                } else if (payBtn) {
+                    const leaveId = payBtn.dataset.leaveId;
+                    const amount = payBtn.dataset.amount;
+                    confirmMessage.textContent = `هل أنت متأكد من تحديد هذه الإجازة كمدفوعة بمبلغ ${amount}?`;
+                    currentConfirmAction = async () => {
+                        const result = await sendAjaxRequest('mark_leave_paid', { leave_id: leaveId, amount: amount });
+                        if (result.success) {
+                            showToast(result.message, 'success');
+                            payBtn.classList.add('d-none');
+                            const row = payBtn.closest('tr');
+                            row.querySelector('.cell-is-paid').innerHTML = '<span class="badge bg-success">نعم</span>';
+                            row.querySelector('.cell-amount').textContent = parseFloat(amount).toFixed(2);
+                            updateStats(result.stats);
+                        }
+                    };
+                    confirmModal.show();
                 }
+            });
+
+            document.getElementById('sortQueriesDetailNewest').addEventListener('click', () => {
+                currentDetailedQueries.sort((a,b) => new Date(b.queried_at) - new Date(a.queried_at));
+                renderDetailedQueries();
+            });
+            document.getElementById('sortQueriesDetailOldest').addEventListener('click', () => {
+                currentDetailedQueries.sort((a,b) => new Date(a.queried_at) - new Date(b.queried_at));
+                renderDetailedQueries();
+            });
+            document.getElementById('sortQueriesDetailReset').addEventListener('click', () => {
+                currentDetailedQueries.sort((a,b) => new Date(b.queried_at) - new Date(a.queried_at));
+                renderDetailedQueries();
             });
 
             // ====== أحداث الفرز، البحث لجدول المدفوعات لكل مريض ======
@@ -4929,11 +5019,12 @@ $conn->close();
                 };
             });
 
-            currentTableData.patients = Array.from(patientsTable.querySelectorAll('tbody tr:not(.no-results)')).map(row => {
+           currentTableData.patients = Array.from(patientsTable.querySelectorAll('tbody tr:not(.no-results)')).map(row => {
                 return {
                     id: row.dataset.id,
                     name: row.cells[1].textContent,
                     identity_number: row.cells[2].textContent,
+                    phone: row.cells[3].textContent,
                 };
             });
 
@@ -4945,6 +5036,7 @@ $conn->close();
                     patient_name: row.cells[2].textContent,
                     identity_number: row.cells[3].textContent,
                     queried_at: row.cells[4].textContent,
+                    doctor_note: row.dataset.doctorNote || ''
                 };
             });
 
