@@ -60,7 +60,8 @@ function resetAndCreateTables(array $config, string $adminUsername, string $admi
 CREATE TABLE `patients` (
   `id`             INT AUTO_INCREMENT PRIMARY KEY,
   `name`           VARCHAR(100) NOT NULL,
-  `identity_number` VARCHAR(20) NOT NULL UNIQUE
+  `identity_number` VARCHAR(20) NOT NULL UNIQUE,
+  `phone`          VARCHAR(20) DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 SQL
     );

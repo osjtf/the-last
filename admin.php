@@ -96,9 +96,16 @@ $conn->query("
     CREATE TABLE IF NOT EXISTS patients (
         id INT AUTO_INCREMENT PRIMARY KEY,
         name VARCHAR(100) NOT NULL,
-        identity_number VARCHAR(20) NOT NULL UNIQUE
+        identity_number VARCHAR(20) NOT NULL UNIQUE,
+        phone VARCHAR(20) DEFAULT NULL
     ) ENGINE=InnoDB CHARSET=utf8mb4
 ");
+
+// التأكد من وجود عمود الهاتف وإضافته إذا لزم الأمر
+$checkPhone = $conn->query("SHOW COLUMNS FROM patients LIKE 'phone'");
+if ($checkPhone && $checkPhone->num_rows === 0) {
+    $conn->query("ALTER TABLE patients ADD COLUMN phone VARCHAR(20) DEFAULT NULL");
+}
 
 $conn->query("
     CREATE TABLE IF NOT EXISTS doctors (
@@ -158,7 +165,7 @@ $conn->query("
 
 
 // ==== 5. دوال مساعدة لإدارة المرضى والأطباء (مراجعة: التحقق من المدخلات) ====
-function get_or_add_patient($conn, $name, $ident)
+function get_or_add_patient($conn, $name, $ident, $phone = null)
 {
     // تطهير المدخلات قبل استخدامها في الاستعلام
     $name = trim($name);
@@ -184,12 +191,12 @@ function get_or_add_patient($conn, $name, $ident)
     }
     $stmt->close();
 
-    $stmt = $conn->prepare("INSERT INTO patients (name, identity_number) VALUES (?, ?)");
+    $stmt = $conn->prepare("INSERT INTO patients (name, identity_number, phone) VALUES (?, ?, ?)");
     if (!$stmt) {
         error_log("Prepare failed: (" . $conn->errno . ") " . $conn->error);
         return false;
     }
-    $stmt->bind_param("ss", $name, $ident);
+    $stmt->bind_param("sss", $name, $ident, $phone);
     $stmt->execute();
     $pid = $stmt->insert_id;
     $stmt->close();
@@ -391,14 +398,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
         case 'add_patient':
             $pname = filter_input(INPUT_POST, 'patient_name', FILTER_SANITIZE_STRING);
             $pident = filter_input(INPUT_POST, 'identity_number', FILTER_SANITIZE_STRING);
+            $pphone = filter_input(INPUT_POST, 'phone', FILTER_SANITIZE_STRING);
 
             if (empty($pname) || empty($pident)) {
                 echo json_encode(['success' => false, 'message' => 'أدخل اسم المريض ورقم الهوية.']);
                 exit;
             }
-            $pid = get_or_add_patient($conn, $pname, $pident);
+            $pid = get_or_add_patient($conn, $pname, $pident, $pphone);
             if ($pid) {
-                $row = $conn->query("SELECT id, name, identity_number FROM patients WHERE id=$pid")->fetch_assoc();
+                $row = $conn->query("SELECT id, name, identity_number, phone FROM patients WHERE id=$pid")->fetch_assoc();
                 echo json_encode(['success' => true, 'patient' => $row, 'stats' => get_dashboard_stats($conn)]);
             } else {
                 echo json_encode(['success' => false, 'message' => 'حدث خطأ أثناء إضافة/جلب المريض.']);
@@ -409,21 +417,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             $pid = filter_input(INPUT_POST, 'patient_id', FILTER_VALIDATE_INT);
             $pname = filter_input(INPUT_POST, 'patient_name', FILTER_SANITIZE_STRING);
             $pident = filter_input(INPUT_POST, 'identity_number', FILTER_SANITIZE_STRING);
+            $pphone = filter_input(INPUT_POST, 'phone', FILTER_SANITIZE_STRING);
 
             if (!$pid || empty($pname) || empty($pident)) {
                 echo json_encode(['success' => false, 'message' => 'بيانات المريض غير صحيحة.']);
                 exit;
             }
-            $stmt = $conn->prepare("UPDATE patients SET name=?, identity_number=? WHERE id=?");
+            $stmt = $conn->prepare("UPDATE patients SET name=?, identity_number=?, phone=? WHERE id=?");
             if (!$stmt) {
                 error_log("Prepare failed (edit_patient): (" . $conn->errno . ") " . $conn->error);
                 echo json_encode(['success' => false, 'message' => 'خطأ في قاعدة البيانات.']);
                 exit;
             }
-            $stmt->bind_param("ssi", $pname, $pident, $pid);
+            $stmt->bind_param("sssi", $pname, $pident, $pphone, $pid);
             $stmt->execute();
             $stmt->close();
-            $row = $conn->query("SELECT id, name, identity_number FROM patients WHERE id=$pid")->fetch_assoc();
+            $row = $conn->query("SELECT id, name, identity_number, phone FROM patients WHERE id=$pid")->fetch_assoc();
             echo json_encode(['success' => true, 'patient' => $row, 'stats' => get_dashboard_stats($conn)]);
             break;
 
@@ -445,7 +454,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
         case 'fetch_all_patients': // إجراء جديد لجلب قائمة المرضى
             $patients_list = [];
-            $res = $conn->query("SELECT id, name, identity_number FROM patients ORDER BY name ASC");
+            $res = $conn->query("SELECT id, name, identity_number, phone FROM patients ORDER BY name ASC");
             while ($row = $res->fetch_assoc()) {
                 $patients_list[] = $row;
             }
@@ -461,11 +470,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
             if ($patient_select_type === 'manual') {
                 $pm_name = filter_input(INPUT_POST, 'patient_manual_name', FILTER_SANITIZE_STRING);
                 $pm_id = filter_input(INPUT_POST, 'patient_manual_id', FILTER_SANITIZE_STRING);
+                $pm_phone = filter_input(INPUT_POST, 'patient_manual_phone', FILTER_SANITIZE_STRING);
                 if (empty($pm_name) || empty($pm_id)) {
                     echo json_encode(['success' => false, 'message' => 'يجب إدخال اسم المريض ورقم هويته يدوياً.']);
                     exit;
                 }
-                $pid = get_or_add_patient($conn, $pm_name, $pm_id);
+                $pid = get_or_add_patient($conn, $pm_name, $pm_id, $pm_phone);
             } else {
                 $pid = filter_input(INPUT_POST, 'patient_select', FILTER_VALIDATE_INT);
             }
@@ -1110,7 +1120,7 @@ $stats = get_dashboard_stats($conn);
 // ==== 8. جلب قوائم المرضى والأطباء لعرضها في <select> ====
 // هذه البيانات يتم جلبها عند تحميل الصفحة لإعداد الـ <select>s الأولية
 $patients = [];
-$res = $conn->query("SELECT id, name, identity_number FROM patients ORDER BY name ASC");
+$res = $conn->query("SELECT id, name, identity_number, phone FROM patients ORDER BY name ASC");
 if ($res) {
     while ($row = $res->fetch_assoc()) {
         $patients[] = $row;
@@ -1983,7 +1993,7 @@ $conn->close();
                 <div class="col-md-6">
                     <label for="patient_select">ابحث عن مريض</label>
                     <div class="input-group mb-1">
-                        <input type="text" id="searchPatient" class="form-control" placeholder="ابحث بالاسم أو الهوية">
+                        <input type="text" id="searchPatient" class="form-control" placeholder="ابحث بالاسم أو الهوية أو الهاتف">
                         <button class="btn btn-primary" type="button" id="btn-search-patient"><i
                                 class="bi bi-search"></i> بحث</button>
                     </div>
@@ -1991,7 +2001,8 @@ $conn->close();
                         <option value="">اختر مريضًا</option>
                         <?php foreach ($patients as $p): ?>
                             <option value="<?= $p['id'] ?>" data-name="<?= htmlspecialchars(strtolower($p['name'])) ?>"
-                                data-identity="<?= htmlspecialchars(strtolower($p['identity_number'])) ?>">
+                                data-identity="<?= htmlspecialchars(strtolower($p['identity_number'])) ?>"
+                                data-phone="<?= htmlspecialchars(strtolower($p['phone'])) ?>">
                                 <?= htmlspecialchars($p['name'] . ' (' . $p['identity_number'] . ')') ?>
                             </option>
                         <?php endforeach; ?>
@@ -2002,6 +2013,8 @@ $conn->close();
                         class="form-control mt-2 hidden-field" placeholder="اسم المريض الجديد">
                     <input type="text" name="patient_manual_id" id="patient_manual_id"
                         class="form-control mt-1 hidden-field" placeholder="رقم الهوية الجديد">
+                    <input type="text" name="patient_manual_phone" id="patient_manual_phone"
+                        class="form-control mt-1 hidden-field" placeholder="رقم الهاتف الجديد">
                     <div class="invalid-feedback">أدخل اسم المريض ورقم هويته.</div>
                     <div id="noPatientResult" class="no-results mt-1" style="display:none;">
                         لم يتم العثور على مريض مطابق.
@@ -2646,7 +2659,7 @@ $conn->close();
                     <div class="input-group mb-2">
                         <label for="searchPatientsTable" class="form-label visually-hidden">بحث</label>
                         <input type="text" id="searchPatientsTable" class="form-control"
-                            placeholder="ابحث بالاسم أو الهوية">
+                            placeholder="ابحث بالاسم أو الهوية أو الهاتف">
                         <button class="btn btn-primary" type="button" id="btn-search-patients"><i
                                 class="bi bi-search"></i> بحث</button>
                     </div>
@@ -2657,6 +2670,7 @@ $conn->close();
                                     <th>رقم</th>
                                     <th>الاسم <i class="bi bi-sort-alpha-down"></i></th>
                                     <th>الهوية</th>
+                                    <th>الهاتف</th>
                                     <th>تحكم</th>
                                 </tr>
                             </thead>
@@ -2666,6 +2680,7 @@ $conn->close();
                                         <td class="row-num"></td>
                                         <td><?= htmlspecialchars($p['name']) ?></td>
                                         <td><?= htmlspecialchars($p['identity_number']) ?></td>
+                                        <td><?= htmlspecialchars($p['phone']) ?></td>
                                         <td>
                                             <button class="btn btn-warning btn-sm action-btn btn-edit-patient"><i
                                                     class="bi bi-pencil-square"></i> تعديل</button>
@@ -2676,7 +2691,7 @@ $conn->close();
                                 <?php endforeach; ?>
                                 <?php if (empty($patients)): ?>
                                     <tr class="no-results">
-                                        <td colspan="4">لا يوجد مرضى حاليًا.</td>
+                                        <td colspan="5">لا يوجد مرضى حاليًا.</td>
                                     </tr>
                                 <?php endif; ?>
                             </tbody>
@@ -2685,19 +2700,24 @@ $conn->close();
                     <form class="row g-2 mt-3 needs-validation" id="patientForm" style="display:none;" novalidate>
                         <?= csrf_input(); ?>
                         <input type="hidden" id="patient_form_id" name="patient_id">
-                        <div class="col-md-5">
+                        <div class="col-md-4">
                             <label for="patient_form_name" class="form-label visually-hidden">اسم المريض</label>
                             <input type="text" id="patient_form_name" name="patient_name" class="form-control"
                                 placeholder="اسم المريض" required>
                             <div class="invalid-feedback">أدخل اسم المريض.</div>
                         </div>
-                        <div class="col-md-5">
+                        <div class="col-md-4">
                             <label for="patient_form_identity" class="form-label visually-hidden">رقم الهوية</label>
                             <input type="text" id="patient_form_identity" name="identity_number" class="form-control"
                                 placeholder="رقم الهوية" required>
                             <div class="invalid-feedback">أدخل رقم الهوية.</div>
                         </div>
-                        <div class="col-md-2 d-flex gap-1">
+                        <div class="col-md-4">
+                            <label for="patient_form_phone" class="form-label visually-hidden">رقم الهاتف</label>
+                            <input type="text" id="patient_form_phone" name="phone" class="form-control"
+                                placeholder="رقم الهاتف">
+                        </div>
+                        <div class="col-md-12 d-flex gap-1">
                             <button type="submit" class="btn btn-success-custom w-100"><i class="bi bi-save-fill"></i>
                                 حفظ</button>
                             <button type="button" class="btn btn-secondary w-100" id="btn-cancel-patient"><i
@@ -2836,6 +2856,7 @@ $conn->close();
             const patientSelect = document.getElementById('patient_select');
             const patientManualName = document.getElementById('patient_manual_name');
             const patientManualId = document.getElementById('patient_manual_id');
+            const patientManualPhone = document.getElementById('patient_manual_phone');
             const searchPatientInput = document.getElementById('searchPatient');
             const noPatientResult = document.getElementById('noPatientResult');
 
@@ -3234,6 +3255,7 @@ $conn->close();
                         option.textContent = `${p.name} (${p.identity_number})`;
                         option.dataset.name = p.name.toLowerCase();
                         option.dataset.identity = p.identity_number.toLowerCase();
+                        option.dataset.phone = (p.phone || '').toLowerCase();
                         patientSelect.append(option);
                     });
                     if (selectedId) {
@@ -3254,6 +3276,7 @@ $conn->close();
                 <td class="row-num"></td>
                 <td class="cell-patient-name">${htmlspecialchars(p.name)}</td>
                 <td class="cell-patient-identity">${htmlspecialchars(p.identity_number)}</td>
+                <td class="cell-patient-phone">${htmlspecialchars(p.phone || '')}</td>
                 <td>
                     <button class="btn btn-warning btn-sm action-btn btn-edit-patient"><i class="bi bi-pencil-square"></i> تعديل</button>
                     <button class="btn btn-danger btn-sm action-btn btn-delete-patient"><i class="bi bi-trash-fill"></i> حذف</button>
@@ -3451,7 +3474,8 @@ $conn->close();
                                 item.title.toLowerCase().includes(searchTerm);
                         } else if (tableElement.id === 'patientsTable') {
                             return item.name.toLowerCase().includes(searchTerm) ||
-                                item.identity_number.toLowerCase().includes(searchTerm);
+                                item.identity_number.toLowerCase().includes(searchTerm) ||
+                                (item.phone || '').toLowerCase().includes(searchTerm);
                         } else if (tableElement.id === 'queriesTable') {
                             return item.service_code.toLowerCase().includes(searchTerm) ||
                                 item.patient_name.toLowerCase().includes(searchTerm) ||
@@ -3748,6 +3772,7 @@ $conn->close();
                 const isManual = patientSelect.value === 'manual';
                 patientManualName.classList.toggle('hidden-field', !isManual);
                 patientManualId.classList.toggle('hidden-field', !isManual);
+                patientManualPhone.classList.toggle('hidden-field', !isManual);
                 patientManualName.toggleAttribute('required', isManual);
                 patientManualId.toggleAttribute('required', isManual);
                 searchPatientInput.classList.toggle('hidden-field', isManual);
@@ -3757,6 +3782,7 @@ $conn->close();
                 if (!isManual) {
                     patientManualName.value = '';
                     patientManualId.value = '';
+                    patientManualPhone.value = '';
                     patientManualName.classList.remove('is-invalid');
                     patientManualId.classList.remove('is-invalid');
                 }
@@ -3769,7 +3795,8 @@ $conn->close();
                 patientSelect.querySelectorAll('option:not([value="manual"]):not([value=""])').forEach(option => {
                     const patientName = option.dataset.name;
                     const patientIdentity = option.dataset.identity;
-                    const matches = patientName.includes(searchTerm) || patientIdentity.includes(searchTerm);
+                    const patientPhone = option.dataset.phone || '';
+                    const matches = patientName.includes(searchTerm) || patientIdentity.includes(searchTerm) || patientPhone.includes(searchTerm);
                     option.style.display = matches ? '' : 'none';
                     if (matches) found = true;
                 });
@@ -3950,6 +3977,7 @@ $conn->close();
             const patientFormId = document.getElementById('patient_form_id');
             const patientFormName = document.getElementById('patient_form_name');
             const patientFormIdentity = document.getElementById('patient_form_identity');
+            const patientFormPhone = document.getElementById('patient_form_phone');
 
             document.getElementById('btn-show-add-patient').addEventListener('click', () => {
                 clearForm(patientForm);
@@ -3988,10 +4016,12 @@ $conn->close();
                     const patientId = row.dataset.id;
                     const patientName = row.querySelector('.cell-patient-name').textContent;
                     const patientIdentity = row.querySelector('.cell-patient-identity').textContent;
+                    const patientPhone = row.querySelector('.cell-patient-phone').textContent;
 
                     patientFormId.value = patientId;
                     patientFormName.value = patientName;
                     patientFormIdentity.value = patientIdentity;
+                    patientFormPhone.value = patientPhone;
                     patientForm.style.display = 'flex'; // إظهار النموذج للتعديل
                 }
             });
@@ -4934,6 +4964,7 @@ $conn->close();
                     id: row.dataset.id,
                     name: row.cells[1].textContent,
                     identity_number: row.cells[2].textContent,
+                    phone: row.cells[3].textContent,
                 };
             });
 
